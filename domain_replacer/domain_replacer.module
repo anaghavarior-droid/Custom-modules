@@ -1,0 +1,41 @@
+<?php
+
+/**
+ * @file
+ * Domain Replacer module.
+ */
+
+use Drupal\Core\Entity\EntityInterface;
+
+/**
+ * Implements hook_entity_presave().
+ */
+function domain_replacer_entity_presave(EntityInterface $entity) {
+  // Only process content entity types that commonly have link fields.
+  $allowed_types = [
+    'node',
+    'taxonomy_term',
+    'media',
+    'paragraph',
+    'block_content',
+    'user',
+  ];
+
+  // Skip if entity type is not in our allowed list.
+  if (!in_array($entity->getEntityTypeId(), $allowed_types)) {
+    return;
+  }
+
+  try {
+    /** @var \Drupal\domain_replacer\DomainReplacer $replacer */
+    $replacer = \Drupal::service('domain_replacer.service');
+    $replacer->processEntity($entity);
+  }
+  catch (\Exception $e) {
+    // Log error but don't break the site.
+    \Drupal::logger('domain_replacer')->error('Error in entity presave for @type: @error', [
+      '@type' => $entity->getEntityTypeId(),
+      '@error' => $e->getMessage(),
+    ]);
+  }
+}

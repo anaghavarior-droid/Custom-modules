@@ -1,0 +1,190 @@
+<?php
+
+/**
+ * @file
+ * Contains bulk_update_nodes.module.
+ */
+
+use Drupal\node\Entity\Node;
+
+/**
+ * Bulk update nodes by content type.
+ */
+function bulk_update_nodes_bulk_update($type = NULL) {
+
+  $nids = \Drupal::entityQuery('node')
+    ->condition('status', 1)
+    ->condition('type', $type)
+    ->accessCheck(FALSE)
+    ->execute();
+
+  $count = 0;
+
+  foreach ($nids as $nid) {
+
+    $node = Node::load($nid);
+
+    if (!$node) {
+      continue;
+    }
+
+    $updated = FALSE;
+
+    /*
+     * Cleanup HTML callback.
+     */
+    $cleanup_html = function ($html) {
+
+      if (empty($html)) {
+        return $html;
+      }
+
+      // Skip iframe content completely.
+      if (stripos($html, '<iframe') !== FALSE) {
+        return $html;
+      }
+
+      /*
+       * Remove font-family and font-size from style attributes.
+       */
+      $html = preg_replace_callback(
+        '/style=("|\')(.*?)\1/i',
+        function ($matches) {
+
+          $style = $matches[2];
+
+          // Remove font-family.
+          $style = preg_replace(
+            '/font-family\s*:\s*[^;]+;?/i',
+            '',
+            $style
+          );
+
+          // Remove font-size.
+          $style = preg_replace(
+            '/font-size\s*:\s*[^;]+;?/i',
+            '',
+            $style
+          );
+
+          // Remove line-height.
+          $style = preg_replace(
+            '/line-height\s*:\s*[^;]+;?/i',
+            '',
+            $style
+          );
+
+          // Cleanup duplicate semicolons.
+          $style = preg_replace('/\s*;\s*;+\s*/', '; ', $style);
+
+          // Cleanup leading/trailing semicolons.
+          $style = trim($style);
+          $style = trim($style, ';');
+
+          // Remove empty style attribute.
+          if ($style === '') {
+            return '';
+          }
+
+          return 'style="' . $style . '"';
+        },
+        $html
+      );
+
+      /*
+       * Remove deprecated font tags but keep content.
+       */
+      $html = preg_replace('/<\/?font[^>]*>/i', '', $html);
+
+      /*
+       * Remove empty paragraphs.
+       */
+      $html = preg_replace(
+        '/<p>(\s|&nbsp;|<br\s*\/?>)*<\/p>/i',
+        '',
+        $html
+      );
+
+      return $html;
+    };
+
+    /*
+     * Process all formatted text fields.
+     */
+    foreach ($node->getFields() as $field_name => $field) {
+
+      $field_definition = $field->getFieldDefinition();
+
+      $field_type = $field_definition->getType();
+
+      // Only process formatted text fields.
+      $allowed_types = [
+        'text',
+        'text_long',
+        'text_with_summary',
+      ];
+
+      if (!in_array($field_type, $allowed_types)) {
+        continue;
+      }
+
+      if ($field->isEmpty()) {
+        continue;
+      }
+
+      foreach ($field as $delta => $item) {
+
+        $current = $item->value ?? '';
+
+        if (empty($current)) {
+          continue;
+        }
+
+        $updated_html = $cleanup_html($current);
+
+        if ($current !== $updated_html) {
+
+          $field->set($delta, [
+            'value' => $updated_html,
+            'format' => $item->format,
+          ]);
+
+          $updated = TRUE;
+        }
+      }
+    }
+
+    /*
+     * Update content template field.
+     */
+    if ($node->hasField('field_content_template')) {
+
+      $current = $node->get('field_content_template')->value;
+
+      if ($current !== 'legacy_template') {
+
+        $node->set('field_content_template', 'legacy_template');
+
+        $updated = TRUE;
+      }
+    }
+
+    /*
+     * Save node only if updated.
+     */
+    if ($updated) {
+
+      try {
+        $node->save();
+        $count++;
+      }
+      catch (\Exception $e) {
+        \Drupal::logger('bulk_update_nodes')
+          ->error($e->getMessage());
+      }
+    }
+  }
+
+  \Drupal::messenger()
+    ->addMessage("$count nodes updated.");
+}
